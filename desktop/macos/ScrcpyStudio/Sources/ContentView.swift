@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -16,11 +17,8 @@ struct ContentView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 11) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 12).fill(.blue.gradient).frame(width: 42, height: 42)
-                        Image(systemName: "iphone.and.arrow.forward")
-                            .font(.system(size: 20, weight: .semibold)).foregroundStyle(.white)
-                    }
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable().scaledToFit().frame(width: 44, height: 44)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Scrcpy Studio").font(.system(size: 20, weight: .bold))
                         Text("设备与投屏控制台").font(.caption).foregroundStyle(.secondary)
@@ -76,8 +74,9 @@ struct ContentView: View {
                     hero
                     HStack(alignment: .top, spacing: 16) {
                         qualityCard
-                        behaviorCard
+                        sourceCard
                     }
+                    behaviorCard
                     actionCard
                     logCard
                 }
@@ -123,6 +122,7 @@ struct ContentView: View {
                     Text("1280").tag(1280); Text("1920").tag(1920); Text("2560").tag(2560); Text("原始").tag(0)
                 }.labelsHidden().frame(width: 120)
             }
+            .disabled(model.profile.videoSource == .camera)
             FormRow("视频码率") {
                 Picker("", selection: $model.profile.bitRate) {
                     Text("8 Mbps").tag("8M"); Text("12 Mbps").tag("12M"); Text("20 Mbps").tag("20M"); Text("30 Mbps").tag("30M")
@@ -133,18 +133,70 @@ struct ContentView: View {
                     Text("30 FPS").tag(30); Text("60 FPS").tag(60); Text("120 FPS").tag(120); Text("不限制").tag(0)
                 }.labelsHidden().frame(width: 120)
             }
+            .disabled(model.profile.videoSource == .camera)
+            FormRow("视频编码") {
+                Picker("", selection: $model.profile.videoCodec) {
+                    ForEach(VideoCodec.allCases) { codec in Text(codec.title).tag(codec) }
+                }.labelsHidden().frame(width: 120)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading).studioCard()
     }
 
-    private var behaviorCard: some View {
+    private var sourceCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("设备行为", systemImage: "switch.2").font(.headline)
-            Toggle("传输手机声音", isOn: $model.profile.audio)
-            Toggle("投屏时关闭手机屏幕", isOn: $model.profile.turnScreenOff)
-            Toggle("连接期间保持唤醒", isOn: $model.profile.stayAwake)
-            Toggle("在手机上显示触摸位置", isOn: $model.profile.showTouches)
-            Toggle("同时录制为 MP4", isOn: $model.profile.record)
+            Label("画面来源与窗口", systemImage: "rectangle.on.rectangle").font(.headline)
+            FormRow("画面来源") {
+                Picker("", selection: $model.profile.videoSource) {
+                    ForEach(VideoSource.allCases) { source in Text(source.title).tag(source) }
+                }.labelsHidden().frame(width: 120)
+            }
+            if model.profile.videoSource == .camera {
+                FormRow("使用镜头") {
+                    Picker("", selection: $model.profile.cameraFacing) {
+                        ForEach(CameraFacing.allCases) { facing in Text(facing.title).tag(facing) }
+                    }.labelsHidden().frame(width: 120)
+                }
+                FormRow("相机帧率") {
+                    Picker("", selection: $model.profile.cameraFps) {
+                        Text("24 FPS").tag(24); Text("30 FPS").tag(30); Text("60 FPS").tag(60)
+                    }.labelsHidden().frame(width: 120)
+                }
+                Text("相机投屏需要 Android 12 或更高版本")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Toggle("启动后进入全屏", isOn: $model.profile.fullscreen)
+            Toggle("无边框窗口", isOn: $model.profile.borderless)
+            Toggle("窗口始终置顶", isOn: $model.profile.alwaysOnTop)
+        }
+        .toggleStyle(.switch).frame(maxWidth: .infinity, alignment: .leading).studioCard()
+    }
+
+    private var behaviorCard: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            HStack {
+                Label("设备行为", systemImage: "switch.2").font(.headline)
+                Spacer()
+                Button("恢复默认") { model.resetProfile() }.buttonStyle(.borderless)
+                Button("保存配置") { model.saveProfile() }.buttonStyle(.bordered)
+            }
+            HStack(alignment: .top, spacing: 26) {
+                VStack(alignment: .leading, spacing: 13) {
+                    Toggle("传输手机声音", isOn: $model.profile.audio)
+                    Toggle("同步电脑与手机剪贴板", isOn: $model.profile.clipboardSync)
+                    Toggle("允许键鼠控制手机", isOn: $model.profile.controlEnabled)
+                    Toggle("同时录制为 MP4", isOn: $model.profile.record)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Divider()
+                VStack(alignment: .leading, spacing: 13) {
+                    Toggle("投屏时关闭手机屏幕", isOn: $model.profile.turnScreenOff)
+                    Toggle("连接期间保持唤醒", isOn: $model.profile.stayAwake)
+                    Toggle("在手机上显示触摸位置", isOn: $model.profile.showTouches)
+                }
+                .disabled(model.profile.videoSource == .camera)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .toggleStyle(.switch).frame(maxWidth: .infinity, alignment: .leading).studioCard()
     }
@@ -153,15 +205,23 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 13) {
             Label("快捷操作", systemImage: "bolt.fill").font(.headline)
             HStack(spacing: 10) {
+                Button { model.takeScreenshot() } label: { Label("手机截图", systemImage: "camera") }
                 Button { model.installAPK() } label: { Label("安装 APK", systemImage: "shippingbox") }
                 Button { model.pushFile() } label: { Label("传文件到 Download", systemImage: "arrow.up.doc") }
+                Button { model.copyDeviceInfo() } label: { Label("复制设备信息", systemImage: "doc.on.doc") }
+                Spacer()
+            }
+            HStack(spacing: 10) {
+                Button { model.sendKeyEvent("KEYCODE_BACK", name: "返回") } label: { Label("返回", systemImage: "chevron.backward") }
+                Button { model.sendKeyEvent("KEYCODE_HOME", name: "主屏幕") } label: { Label("主屏幕", systemImage: "house") }
+                Button { model.sendKeyEvent("KEYCODE_POWER", name: "电源键") } label: { Label("电源键", systemImage: "power") }
                 if model.selectedDevice?.isWireless == true {
                     Button(role: .destructive) { model.disconnectWireless() } label: { Label("断开无线连接", systemImage: "wifi.slash") }
                 }
                 Spacer()
             }
-            .buttonStyle(.bordered).disabled(model.selectedDevice == nil)
         }
+        .buttonStyle(.bordered).disabled(model.selectedDevice == nil)
         .studioCard()
     }
 

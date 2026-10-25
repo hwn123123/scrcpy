@@ -14,14 +14,55 @@ struct AndroidDevice: Identifiable, Hashable {
     var displayName: String { model.isEmpty ? serial : model.replacingOccurrences(of: "_", with: " ") }
 }
 
-struct MirrorProfile {
+enum VideoCodec: String, Codable, CaseIterable, Identifiable {
+    case h264
+    case h265
+    case av1
+
+    var id: String { rawValue }
+    var title: String { rawValue.uppercased() }
+}
+
+enum VideoSource: String, Codable, CaseIterable, Identifiable {
+    case display
+    case camera
+
+    var id: String { rawValue }
+    var title: String { self == .display ? "手机屏幕" : "手机相机" }
+}
+
+enum CameraFacing: String, Codable, CaseIterable, Identifiable {
+    case back
+    case front
+    case external
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .back: return "后置"
+        case .front: return "前置"
+        case .external: return "外接"
+        }
+    }
+}
+
+struct MirrorProfile: Codable, Equatable {
     var maxSize = 1920
     var bitRate = "12M"
     var maxFps = 60
+    var videoCodec = VideoCodec.h264
+    var videoSource = VideoSource.display
+    var cameraFacing = CameraFacing.back
+    var cameraFps = 30
     var audio = true
     var turnScreenOff = false
     var stayAwake = true
     var showTouches = false
+    var clipboardSync = true
+    var controlEnabled = true
+    var fullscreen = false
+    var borderless = false
+    var alwaysOnTop = false
     var record = false
 }
 
@@ -30,15 +71,22 @@ final class AppModel: ObservableObject {
     @Published var devices: [AndroidDevice] = []
     @Published var selectedSerial: String?
     @Published var connectAddress = ""
-    @Published var profile = MirrorProfile()
+    @Published var profile: MirrorProfile
     @Published var isRefreshing = false
     @Published var isMirroring = false
     @Published var statusText = "准备就绪"
     @Published var logText = "Scrcpy Studio 已启动。\n"
 
     private var scrcpyProcess: Process?
+    private static let profileKey = "ScrcpyStudio.MirrorProfile.v2"
 
     init() {
+        if let data = UserDefaults.standard.data(forKey: Self.profileKey),
+           let savedProfile = try? JSONDecoder().decode(MirrorProfile.self, from: data) {
+            profile = savedProfile
+        } else {
+            profile = MirrorProfile()
+        }
         refreshDevices()
     }
 
@@ -134,14 +182,28 @@ final class AppModel: ObservableObject {
             return
         }
 
-        var arguments = ["--serial", device.serial]
-        if profile.maxSize > 0 { arguments += ["--max-size", "\(profile.maxSize)"] }
+        saveProfile(showConfirmation: false)
+
+        var arguments = ["--serial", device.serial, "--video-codec", profile.videoCodec.rawValue]
+        if profile.videoSource == .camera {
+            arguments += ["--video-source", "camera", "--camera-facing", profile.cameraFacing.rawValue]
+            if profile.cameraFps > 0 { arguments += ["--camera-fps", "\(profile.cameraFps)"] }
+        } else {
+            if profile.maxSize > 0 { arguments += ["--max-size", "\(profile.maxSize)"] }
+            if profile.maxFps > 0 { arguments += ["--max-fps", "\(profile.maxFps)"] }
+        }
         if !profile.bitRate.isEmpty { arguments += ["--video-bit-rate", profile.bitRate] }
-        if profile.maxFps > 0 { arguments += ["--max-fps", "\(profile.maxFps)"] }
         if !profile.audio { arguments.append("--no-audio") }
-        if profile.turnScreenOff { arguments.append("--turn-screen-off") }
-        if profile.stayAwake { arguments.append("--stay-awake") }
-        if profile.showTouches { arguments.append("--show-touches") }
+        if profile.videoSource == .display {
+            if profile.turnScreenOff { arguments.append("--turn-screen-off") }
+            if profile.stayAwake { arguments.append("--stay-awake") }
+            if profile.showTouches { arguments.append("--show-touches") }
+        }
+        if !profile.clipboardSync { arguments.append("--no-clipboard-autosync") }
+        if !profile.controlEnabled { arguments.append("--no-control") }
+        if profile.fullscreen { arguments.append("--fullscreen") }
+        if profile.borderless { arguments.append("--window-borderless") }
+        if profile.alwaysOnTop { arguments.append("--always-on-top") }
 
         if profile.record {
             let panel = NSSavePanel()
@@ -218,6 +280,58 @@ final class AppModel: ObservableObject {
         runADB(["-s", serial, "push", file.path, "/sdcard/Download/"]) { result in
             self.statusText = result.status == 0 ? "文件已传到 Download" : "文件传输失败"
         }
+    }
+
+    func takeScreenshot() {
+        guard let serial = selectedSerial else { return }
+        let panel = NSSavePanel()
+        panel.title = "保存手机截图"
+        panel.nameFieldStringValue = "手机截图-\(Self.timestamp()).png"
+        panel.allowedContentTypes = [.png]
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        let remotePath = "/data/local/tmp/scrcpy-studio-screenshot.png"
+        statusText = "正在截取手机屏幕…"
+        runADB(["-s", serial, "shell", "screencap", "-p", remotePath]) { capture in
+            guard capture.status == 0 else {
+                self.statusText = "手机截图失败"
+                return
+            }
+            self.runADB(["-s", serial, "pull", remotePath, destination.path]) { pull in
+                self.runADB(["-s", serial, "shell", "rm", "-f", remotePath]) { _ in }
+                self.statusText = pull.status == 0 ? "截图已保存：\(destination.lastPathComponent)" : "截图传输失败"
+            }
+        }
+    }
+
+    func sendKeyEvent(_ keyCode: String, name: String) {
+        guard let serial = selectedSerial else { return }
+        runADB(["-s", serial, "shell", "input", "keyevent", keyCode]) { result in
+            self.statusText = result.status == 0 ? "已发送：\(name)" : "发送按键失败"
+        }
+    }
+
+    func copyDeviceInfo() {
+        guard let device = selectedDevice else { return }
+        let text = "设备：\(device.displayName)\n序列号：\(device.serial)\n产品：\(device.product)\n连接：\(device.isWireless ? "无线" : "USB")"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        statusText = "设备信息已复制"
+    }
+
+    func saveProfile(showConfirmation: Bool = true) {
+        guard let data = try? JSONEncoder().encode(profile) else {
+            if showConfirmation { statusText = "配置保存失败" }
+            return
+        }
+        UserDefaults.standard.set(data, forKey: Self.profileKey)
+        if showConfirmation { statusText = "投屏配置已保存" }
+    }
+
+    func resetProfile() {
+        profile = MirrorProfile()
+        saveProfile(showConfirmation: false)
+        statusText = "已恢复默认配置"
     }
 
     func clearLog() { logText = "" }
