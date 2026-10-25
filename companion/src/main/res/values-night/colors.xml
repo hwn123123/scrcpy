@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="link_background">#0E1117</color>
+    <color name="link_primary">#4C8DFF</color>
+    <color name="link_text">#F2F5FB</color>
+    <color name="link_muted">#9CA9BE</color>
+    <color name="link_surface">#181C24</color>
+    <color name="link_stroke">#2B3240</color>
+    <color name="link_success">#43D18A</color>
+    <color name="link_danger">#FF6975</color>
+</resources>
